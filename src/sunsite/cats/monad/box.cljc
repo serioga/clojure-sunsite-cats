@@ -3,11 +3,21 @@
             [cats.util :as util]
             [cats.context :as ctx]))
 
-(defn throwable?
+(defn exception?
   "Return true if `v` is an instance of
   the Throwable or js/Error type."
   [e]
-  (instance? #?(:clj Throwable :cljs js/Error) e))
+  (instance? #?(:clj Exception :cljs js/Error) e))
+
+;(defn- str-info [info]
+;  (if (empty? info) "" (str " " (apply pr-str info))))
+(defn- str-payload [info]
+  (if (empty? info) "" (str " [" (str info) "]")))
+
+(defn- str-exception [^Exception e] (.getMessage e))
+
+(defn- ^String info-payload [info]
+  (apply str (interpose " " info)))
 
 ;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;
 ;; Types and implementations.
@@ -15,7 +25,7 @@
 
 (declare context)
 
-(deftype Full [value info]
+(deftype Full [value payload]
   p/Contextual
   (-get-context [_] context)
 
@@ -24,7 +34,7 @@
 
   p/Printable
   (-repr [_]
-    (str "#<Full " (pr-str value) (if (empty? info) "" (str " " (apply pr-str info))) ">"))
+    (str "#<Full " (pr-str value) (str-payload payload) ">"))
 
   #?@(:cljs [cljs.core/IDeref
              (-deref [_] value)]
@@ -40,11 +50,11 @@
       :cljs
       [cljs.core/IEquiv
        (-equiv [_ other]
-         (if (instance? Full other)
-           (= value (.value other))
-           false))]))
+               (if (instance? Full other)
+                 (= value (.value other))
+                 false))]))
 
-(deftype Failure [exception]
+(deftype Failure [exception payload]
   p/Contextual
   (-get-context [_] context)
 
@@ -53,7 +63,7 @@
 
   p/Printable
   (-repr [_]
-    (str "#<Failure " (.getMessage ^Throwable exception) ">"))
+    (str "#<Failure " (str-exception exception) (str-payload payload) ">"))
 
   #?@(:cljs [cljs.core/IDeref
              (-deref [_] (throw exception))]
@@ -70,9 +80,9 @@
       :cljs
       [cljs.core/IEquiv
        (-equiv [_ other]
-         (if (instance? Failure other)
-           (= exception (.exception other))
-           false))]))
+               (if (instance? Failure other)
+                 (= exception (.exception other))
+                 false))]))
 
 (alter-meta! #'->Full assoc :private true)
 (alter-meta! #'->Failure assoc :private true)
@@ -106,24 +116,32 @@
   It wraps any arbitrary value into
   full box type."
   [v & info]
-  (Full. v info))
+  (Full. v (info-payload info)))
 
-; todo: test suit
 (defn failure
   "A failure type constructor."
-  ([] (failure nil))
-  ([e & msgs]
-   (let [e (if (failure? e) (.exception ^Failure e) e)]
-     (if (throwable? e)
-       (let [message (apply str (interpose " " msgs))
-             message (if (clojure.string/blank? message) "" (str message " <- "))
-             message (str message (.getMessage ^Throwable e))]
-         (Failure. (Exception. message e)))
-       (Failure. (Exception. (clojure.string/trim (str (pr-str e) " " (apply str (interpose " " msgs))))))))
-    ))
+  ([]
+   (failure (Exception.)))
+  ([err & info]
+   (let [payload (info-payload info)]
+     (cond
+       (exception? err) (Failure. err payload)
+
+       (failure? err) (let [orig-exc (.exception ^Failure err)
+                            orig-payload (str (.payload ^Failure err))
+                            message (str-exception orig-exc)
+                            chain #(->> %
+                                        (remove empty?)
+                                        (interpose " <- ")
+                                        (apply str))]
+                        (Failure. (Exception. message orig-exc)
+                                  (chain [payload orig-payload])))
+
+       :else (Failure. (Exception. ^String (str err)) payload)))))
 
 (defn failure-message [box]
-  (if (failure? box) (.getMessage ^Throwable (.exception ^Failure box))))
+  (if (failure? box) (str (str-exception (.exception ^Failure box))
+                          (str-payload (.payload ^Failure box)))))
 
 (defn extract
   "Return inner value from exception monad.
@@ -153,11 +171,11 @@ exec-try-on
   (try
     (let [result (func)]
       (cond
-        (throwable? result) (apply failure result msgs)
-        (failure? result) (apply failure (.exception ^Failure result) msgs)
+        (exception? result) (apply failure result msgs)
+        (failure? result) (apply failure result msgs)
         (box? result) result
         :else (full result)))
-    (catch #?(:clj  Throwable
+    (catch #?(:clj  Exception
               :cljs js/Error) e (apply failure e msgs))))
 
 (defn ^{:no-doc true}
@@ -208,7 +226,7 @@ exec-try-or-recover
   [func]
   (let [metadata (meta func)]
     (-> (fn [& args] (try-on (apply func args)))
-      (with-meta metadata))))
+        (with-meta metadata))))
 
 ;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;
 ;; Monad definition

@@ -1,4 +1,4 @@
-(defproject ru.sunsite/cats "0.9.0"
+(defproject ru.sunsite/cats "1.0.0"
   :description "Extensions for funcool/cats clojure library"
   :url "https://github.com/serioga/clojure-sunsite-cats"
   :license {:name "Eclipse Public License"
